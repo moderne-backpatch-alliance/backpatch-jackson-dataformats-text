@@ -1025,4 +1025,26 @@ public class ParserTest {
         expectedException.expectMessage("Unknown escape sequence");
         toml("foo = \"\\k\"");
     }
+
+    /**
+     * CVE-2023-3894. Upstream's version of this test (FuzzTomlReadTest#testStackOverflow50083,
+     * added by #398) catches StreamConstraintsException, which is jackson-core 2.15 API this
+     * baseline does not have and which this backpatch deliberately does not add. Same input, same
+     * assertion on the message; the type is the lexer's existing TomlStreamReadException.
+     */
+    @Test
+    public void testDeepNestingStackOverflow() throws Exception {
+        StringBuilder input = new StringBuilder();
+        for (int i = 0; i < 9999; i++) {
+            input.append("a={");
+        }
+        try {
+            new TomlMapper().readTree(input.toString());
+            Assert.fail("Should not pass");
+        } catch (TomlStreamReadException e) {
+            Assert.assertTrue("unexpected message: " + e.getMessage(),
+                    e.getMessage().contains(
+                        "Depth (1001) exceeds the maximum allowed nesting depth (1000)"));
+        }
+    }
 }

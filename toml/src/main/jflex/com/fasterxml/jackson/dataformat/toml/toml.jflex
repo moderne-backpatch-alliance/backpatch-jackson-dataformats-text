@@ -30,6 +30,23 @@ this.textBuffer = ioContext.constructTextBuffer();
 
   private boolean trimmedNewline;
   final com.fasterxml.jackson.core.util.TextBuffer textBuffer;
+  private int nestingDepth;
+
+  /**
+   * Upstream reads this from StreamReadConstraints, which is a 2.15 feature of jackson-core.
+   * It is fixed here on purpose: taking upstream's version would make this coordinate only work
+   * alongside a backpatched jackson-core, and two coordinates that must move together are not a
+   * drop-in replacement. The value is upstream's own default.
+   */
+  private static final int MAX_NESTING_DEPTH = 1000;
+
+  /** Reported through the lexer's existing errorContext, so no new exception type ships. */
+  private void verifyNestingDepth() throws TomlStreamReadException {
+      if (++nestingDepth > MAX_NESTING_DEPTH) {
+          throw errorContext.atPosition(this).generic("Depth (" + nestingDepth
+                  + ") exceeds the maximum allowed nesting depth (" + MAX_NESTING_DEPTH + ")");
+      }
+  }
 
   private void requestLargerBuffer() throws TomlStreamReadException {
       if (prohibitInternalBufferAllocate) {
@@ -52,6 +69,10 @@ this.textBuffer = ioContext.constructTextBuffer();
           zzBuffer = null;
       }
       textBuffer.releaseBuffers();
+  }
+
+  public int getNestingDepth() {
+      return nestingDepth;
   }
 
   private void startString() {
@@ -257,8 +278,14 @@ HexDig = [0-9A-Fa-f]
           yybegin(LITERAL_STRING);
           startString();
       }
-    {StdTableOpen} {return TomlToken.STD_TABLE_OPEN;}
-    {ArrayTableOpen} {return TomlToken.ARRAY_TABLE_OPEN;}
+    {StdTableOpen} {
+          verifyNestingDepth();
+          return TomlToken.STD_TABLE_OPEN;
+      }
+    {ArrayTableOpen} {
+          verifyNestingDepth();
+          return TomlToken.ARRAY_TABLE_OPEN;
+      }
     {KeyValSep} {return TomlToken.KEY_VAL_SEP;}
     {NewLine} {}
     {Comment} {}
@@ -284,9 +311,18 @@ HexDig = [0-9A-Fa-f]
           startString();
       }
     {KeyValSep} {return TomlToken.KEY_VAL_SEP;}
-    {InlineTableClose} {return TomlToken.INLINE_TABLE_CLOSE;}
-    {StdTableClose} {return TomlToken.STD_TABLE_CLOSE;}
-    {ArrayTableClose} {return TomlToken.ARRAY_TABLE_CLOSE;}
+    {InlineTableClose} {
+          nestingDepth--;
+          return TomlToken.INLINE_TABLE_CLOSE;
+      }
+    {StdTableClose} {
+          nestingDepth--;
+          return TomlToken.STD_TABLE_CLOSE;
+      }
+    {ArrayTableClose} {
+          nestingDepth--;
+          return TomlToken.ARRAY_TABLE_CLOSE;
+      }
 }
 
 <EXPECT_EOL> {
@@ -340,18 +376,30 @@ HexDig = [0-9A-Fa-f]
       }
 
     // inline array / table
-    {ArrayOpen} {WsCommentNewlineNonEmpty}* {return TomlToken.ARRAY_OPEN;}
-    {InlineTableOpen} {return TomlToken.INLINE_TABLE_OPEN;}
+    {ArrayOpen} {WsCommentNewlineNonEmpty}* {
+          verifyNestingDepth();
+          return TomlToken.ARRAY_OPEN;
+      }
+    {InlineTableOpen} {
+          verifyNestingDepth();
+          return TomlToken.INLINE_TABLE_OPEN;
+      }
 
     // array end just after comma
-    {WsCommentNewlineNonEmpty}* {ArrayClose} {return TomlToken.ARRAY_CLOSE;}
+    {WsCommentNewlineNonEmpty}* {ArrayClose} {
+          nestingDepth--;
+          return TomlToken.ARRAY_CLOSE;
+      }
 }
 
 <EXPECT_ARRAY_SEP> {
     // array-values =  ws-comment-newline val ws-comment-newline array-sep array-values
     // array-values =/ ws-comment-newline val ws-comment-newline [ array-sep ]
     {Comma} {WsCommentNewlineNonEmpty}* {return TomlToken.COMMA;}
-    {ArrayClose} {return TomlToken.ARRAY_CLOSE;}
+    {ArrayClose} {
+          nestingDepth--;
+          return TomlToken.ARRAY_CLOSE;
+      }
     {WsCommentNewlineNonEmpty} {} // always allowed here
 }
 
@@ -360,7 +408,10 @@ HexDig = [0-9A-Fa-f]
     // inline-table-keyvals = keyval [ inline-table-sep inline-table-keyvals ]
 
     {Ws} {Comma} {Ws} {return TomlToken.COMMA;}
-    {InlineTableClose} {return TomlToken.INLINE_TABLE_CLOSE;}
+    {InlineTableClose} {
+          nestingDepth--;
+          return TomlToken.INLINE_TABLE_CLOSE;
+      }
 }
 
 <BASIC_STRING> {
